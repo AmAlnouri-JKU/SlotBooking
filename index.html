@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Feedback Slot Booking</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 24px auto; padding: 0 16px; color: #222; line-height: 1.4; }
+    h2 { margin-bottom: 8px; }
+    .info { background: #fff8e1; border: 1px solid #f3d27a; border-radius: 8px; padding: 10px 14px 10px 30px; }
+    .info li { margin: 4px 0; }
+    .s { display: block; border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; cursor: pointer; }
+    .s.full { opacity: .5; cursor: not-allowed; }
+    .s small { color: #555; }
+    .s .sub { display: block; margin: 4px 0 0 22px; color: #555; font-size: .9em; }
+    .hint { color: #666; font-style: italic; }
+    #slot { background: #e3f2fd; border-radius: 8px; padding: 10px 14px; margin: 8px 0 16px; display: none; font-weight: 600; }
+    .field { display: block; margin-top: 8px; }
+    .field input { width: 100%; padding: 8px; margin: 4px 0; box-sizing: border-box; }
+    button { padding: 10px 18px; margin-top: 12px; }
+    .err { color: #b00020; margin-top: 12px; }
+    .ok { background: #e8f5e9; padding: 14px; border-radius: 8px; }
+    .closed { background: #fdecea; padding: 14px; border-radius: 8px; display: none; }
+  </style>
+</head>
+<body>
+  <h2 id="title">Slot registration</h2>
+  <ul id="info" class="info"><li>Loading…</li></ul>
+  <div id="closed" class="closed"></div>
+
+  <form id="f">
+    <h3>1. Online or in person?</h3>
+    <div id="modes"></div>
+
+    <h3>2. Choose a session</h3>
+    <div id="sessions"></div>
+    <div id="slot"></div>
+
+    <h3>3. Your team</h3>
+    <label class="field"><span id="l-team">Team name</span><input type="text" id="team" required></label>
+    <label class="field"><span id="l-email">Your email address</span><input type="email" id="email" required></label>
+
+    <button id="btn" type="submit">Register</button>
+    <div id="err" class="err"></div>
+  </form>
+  <div id="done"></div>
+
+<script>
+  // Paste your web app URL (Deploy → Manage deployments → Web app URL, ends with /exec)
+  const SCRIPT_URL = 'PASTE_YOUR_WEB_APP_URL_HERE';
+
+  // Requests go to Apps Script without Google cookies (credentials: 'omit'),
+  // so the multi-account error cannot occur.
+  function api(promise) {
+    return promise
+      .then(r => r.json())
+      .then(res => { if (!res.ok) throw new Error(res.error); return res.data; });
+  }
+  const apiInfo = () => api(fetch(SCRIPT_URL + '?action=info', { credentials: 'omit' }));
+  const apiBook = (session, team, email) => api(fetch(SCRIPT_URL, {
+    method: 'POST', credentials: 'omit',
+    body: JSON.stringify({ session: session, team: team, email: email }),   // text/plain: no CORS preflight
+  }));
+
+  let info = null, modeSel = null, sessSel = null;
+  const $ = id => document.getElementById(id);
+
+  function el(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text != null) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function load() {
+    apiInfo().then(render).catch(showErr);
+  }
+
+  function render(i) {
+    info = i;
+    $('title').textContent = i.title;
+    document.title = i.title;
+    $('info').innerHTML = '';
+    i.instructions.forEach(t => $('info').appendChild(el('li', t)));
+    $('l-team').textContent = i.labels.team;
+    $('l-email').textContent = i.labels.email;
+
+    if (i.allFull) {                       // nothing left anywhere
+      $('f').style.display = 'none';
+      $('closed').style.display = 'block';
+      $('closed').textContent = 'All slots are fully booked. Registration is closed.';
+      return;
+    }
+
+    if (modeSel && !i.modes.some(m => m.id === modeSel && m.left)) { modeSel = null; sessSel = null; }
+    const box = $('modes');
+    box.innerHTML = '';
+    i.modes.forEach(m => {
+      const l = el('label', null, 's' + (m.left ? '' : ' full'));
+      const r = el('input');
+      r.type = 'radio'; r.name = 'mode'; r.value = m.id; r.disabled = !m.left; r.checked = m.id === modeSel;
+      r.addEventListener('change', () => { modeSel = m.id; sessSel = null; renderSessions(); });
+      l.append(r, el('b', ' ' + m.label),
+        el('small', m.left ? '  (' + m.left + ' slot' + (m.left === 1 ? '' : 's') + ' left)' : '  (fully booked)'),
+        el('span', m.info, 'sub'));
+      box.appendChild(l);
+    });
+    renderSessions();
+  }
+
+  function renderSessions() {
+    const box = $('sessions');
+    box.innerHTML = '';
+    if (!modeSel) { box.appendChild(el('p', 'Choose online or in person first.', 'hint')); showSlot(); return; }
+
+    const list = info.sessions.filter(s => s.mode === modeSel);
+    if (sessSel && !list.some(s => s.id === sessSel && s.left)) sessSel = null;
+    list.forEach(s => {
+      const l = el('label', null, 's' + (s.left ? '' : ' full'));
+      const r = el('input');
+      r.type = 'radio'; r.name = 'session'; r.value = s.id; r.disabled = !s.left; r.checked = s.id === sessSel;
+      r.addEventListener('change', () => { sessSel = s.id; showSlot(); load(); });
+      l.append(r, el('b', ' ' + s.label + ', ' + s.date),
+        el('small', s.left ? '  (' + s.left + ' slot' + (s.left === 1 ? '' : 's') + ' left)' : '  (full)'));
+      box.appendChild(l);
+    });
+    showSlot();
+  }
+
+  function showSlot() {
+    const s = sessSel && info.sessions.find(x => x.id === sessSel);
+    $('slot').style.display = s && s.next ? 'block' : 'none';
+    if (s && s.next) $('slot').textContent = 'Your slot will be: ' + s.next;
+  }
+
+  function showErr(e) {
+    $('err').textContent = (e && e.message) || e;
+    $('btn').disabled = false;
+    load();
+  }
+
+  $('f').addEventListener('submit', ev => {
+    ev.preventDefault();
+    if (!modeSel) return showErr('Please choose online or in person.');
+    if (!sessSel) return showErr('Please choose a session.');
+    $('err').textContent = '';
+    $('btn').disabled = true;
+    apiBook(sessSel, $('team').value, $('email').value)
+      .then(r => {
+        $('f').style.display = 'none';
+        $('info').style.display = 'none';
+        const d = $('done');
+        d.className = 'ok';
+        d.innerHTML = '';
+        d.append(
+          el('h2', '✓ Registration confirmed'),
+          el('p', 'Team: ' + r.team),
+          el('h3', r.mode + ': ' + r.session + ', ' + r.date + ', ' + r.start + '–' + r.end),
+          el('p', r.modeInfo),
+          el('p', r.emailSent
+            ? 'Please check your email for the calendar invitation and the cancellation details.'
+            : 'Your slot is booked, but the invitation email could not be sent. Please note your slot and contact ' + info.contactEmail + ' for the cancellation details.'));
+      })
+      .catch(showErr);
+  });
+
+  load();
+</script>
+</body>
+</html>
